@@ -3,6 +3,30 @@ import pandas as pd
 import os
 import re
 
+# --- 기존 load_and_parse_yonsei_csv 함수를 수정하거나, 파일 업로더 추가 ---
+
+st.sidebar.markdown("### 📊 시간표 데이터 업로드")
+uploaded_file = st.sidebar.file_uploader("교대원 CSV 파일을 선택하세요", type=["csv"])
+
+@st.cache_data
+def parse_uploaded_csv(file_contents):
+    # 기존 load_and_parse_yonsei_csv() 엔진 로직을 그대로 쓰되, 
+    # open() 대신 전달받은 file_contents(텍스트 라인 배열)를 사용하도록 변경
+    parsed_courses = []
+    current_major = "공통/교직"
+    
+    lines = [line.decode("utf-8") for line in file_contents.readlines()]
+    
+    # ... (이후 기존 파싱 while문 로직 그대로 유지) ...
+    return pd.DataFrame(parsed_courses).drop_duplicates(subset=['학정번호', '요일', '교시'])
+
+# 파일이 업로드되었을 때만 마스터 데이터프레임 생성
+if uploaded_file is not None:
+    master_df = parse_uploaded_csv(uploaded_file)
+else:
+    st.info("📊 서비스를 이용하시려면 왼쪽 사이드바에 연세교대원 시간표 CSV 파일을 업로드해 주세요.")
+    st.stop()
+
 # --- [UI/UX] 요즘 대학생 취향의 깔끔한 Pretendard 폰트 및 모던 네이비 스타일 ---
 st.set_page_config(page_title="YONSEI GS-ED Timetable", layout="wide", initial_sidebar_state="expanded")
 
