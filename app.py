@@ -4,29 +4,42 @@ import os
 import re
 
 # ==========================================
-#  🔥 CORE: 업로드된 엑셀 파일을 파싱하는 엔진으로 개조
+#  🔥 CORE: 어떤 파일 형식이든 자동으로 감지해 파싱하는 전천후 엔진
 # ==========================================
 @st.cache_data
 def load_and_parse_yonsei_excel(uploaded_file):
     """
-    고정된 경로 대신, 사용자가 업로드한 파일 객체(uploaded_file)를 받아
-    엑셀 데이터를 기존 파싱 엔진용 텍스트 라인 형태로 변환 후 파싱합니다.
+    사용자가 업로드한 파일 객체(uploaded_file)를 받아
+    진짜 구형 엑셀(.xls), 신형 엑셀(.xlsx) 또는 이름만 엑셀인 CSV 텍스트 파일까지
+    자동으로 내부 구조를 파악하여 연세교대원 시간표 구조를 파싱합니다.
     """
     if uploaded_file is None:
         return pd.DataFrame()
     
+    lines = []
     try:
-        # 업로드된 파일 객체를 pandas가 바로 읽도록 수정 (xls, xlsx 모두 지원)
+        # 1차 시도: 진짜 엑셀 서식(.xls, .xlsx)으로 읽기 시도
         excel_df = pd.read_excel(uploaded_file, header=None)
-        
-        # 각 행을 쉼표(,)로 연결된 문자열 리스트로 변환
-        lines = []
         for idx, row in excel_df.iterrows():
             line_str = ",".join([str(val).strip() if pd.notna(val) else "" for val in row])
             lines.append(line_str + "\n")
-    except Exception as e:
-        st.error(f"❌ 엑셀 파일을 읽는 중 오류가 발생했습니다. 올바른 시간표 파일인지 확인해 주세요: {e}")
-        return pd.DataFrame()
+            
+    except Exception:
+        try:
+            # 2차 시도: 엑셀 읽기 실패 시(텍스트 기반 CSV 충돌인 경우) 파일 포인터를 돌려 텍스트로 읽기
+            uploaded_file.seek(0)
+            file_bytes = uploaded_file.read()
+            
+            # UTF-8 또는 한글 인코딩(CP949/EUC-KR) 예외 처리 대응
+            try:
+                text_content = file_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                text_content = file_bytes.decode("cp949")
+                
+            lines = text_content.splitlines(keepends=True)
+        except Exception as e:
+            st.error(f"❌ 파일을 읽는 중 오류가 발생했습니다. 파일 내용을 확인해 주세요: {e}")
+            return pd.DataFrame()
         
     parsed_courses = []
     current_major = "공통/교직"
@@ -138,30 +151,29 @@ PREDEFINED_COLORS = ["#E2EFFE", "#FEE2E2", "#FEF3C7", "#E0F2FE", "#ECEFEE", "#F3
 
 
 # ==========================================
-#  📦 SIDEBAR: 파일 수동 업로드 패널 추가
+#  📦 SIDEBAR: 수동 파일 업로드 컨트롤 패널
 # ==========================================
 with st.sidebar:
     st.markdown("### 📊 시간표 파일 등록")
-    # 사용자가 직접 엑셀 파일을 드래그 앤 드롭 하도록 유도
     uploaded_file = st.file_uploader(
-        "교대원 시간표 엑셀 파일(.xls, .xlsx)을 업로드해 주세요.", 
-        type=["xls", "xlsx"]
+        "교대원 시간표 파일(.xls, .xlsx, .csv)을 업로드해 주세요.", 
+        type=["xls", "xlsx", "csv"]
     )
     st.write("---")
 
-# 파일이 업로드되었을 경우에만 데이터를 가져오고, 안 올라왔으면 화면 잠금(안내 메시지)
+# 파일 업로드 여부 체크 및 화면 잠금 유연화
 if uploaded_file is not None:
     master_df = load_and_parse_yonsei_excel(uploaded_file)
 else:
-    st.info("📊 서비스를 시작하려면 왼쪽 사이드바에 연세대학교 교육대학원 시간표 엑셀 파일(`.xls` 또는 `.xlsx`)을 업로드해 주세요.")
-    st.stop()  # 파일이 들어오기 전까지 하단 로직 실행 차단
+    st.info("📊 서비스를 시작하려면 왼쪽 사이드바에 연세대학교 교육대학원 시간표 파일(`.xls`, `.xlsx`, `.csv` 등)을 업로드해 주세요.")
+    st.stop()
 
 if master_df.empty:
-    st.error("⚠️ 데이터를 파싱하지 못했습니다. 올바른 형식의 연세교대원 시간표 엑셀 파일이 맞는지 다시 확인해 주세요.")
+    st.error("⚠️ 데이터를 파싱하지 못했습니다. 올바른 형식의 연세교대원 시간표 파일이 맞는지 다시 확인해 주세요.")
     st.stop()
 
 
-# 상태 관리 변수 초기화
+# 수강 신청 및 컬러 매핑 상태 관리 초기화
 if 'my_courses' not in st.session_state: st.session_state.my_courses = []
 if 'color_map' not in st.session_state: st.session_state.color_map = {}
 
@@ -194,7 +206,7 @@ available_df = get_available_courses(master_df, st.session_state.my_courses)
 
 
 # ==========================================
-#  LAYOUT SIDEBAR: 에타 감성의 통합 검색창 & 필터 기본 동작
+#  LAYOUT SIDEBAR: 에타 감성의 통합 검색창 & 필터
 # ==========================================
 with st.sidebar:
     st.markdown("### 🛠️ 강좌 검색 및 필터 패널")
@@ -247,11 +259,12 @@ with st.sidebar:
         else:
             st.caption("현재 추가 가능한 교직 과목이 없습니다.")
 
+
 # ==========================================
 #  LAYOUT MAIN: 시각화 시간표 보드 & 장바구니 리스트
 # ==========================================
 if not st.session_state.my_courses:
-    st.info("💡 왼쪽 사이드바에서 소속 전공이나 교직 과목을 선택하시면, 엑셀에서 파싱된 실시간 강좌 리스트가 나타납니다!")
+    st.info("💡 왼쪽 사이드바에서 소속 전공이나 교직 과목을 선택하시면, 업로드한 파일에서 추출된 실시간 강좌 리스트가 나타납니다!")
 else:
     my_df = master_df[master_df['학정번호'].isin(st.session_state.my_courses)].drop_duplicates(subset=['학정번호'])
     total_credits = my_df['학점'].sum()
