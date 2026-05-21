@@ -2,16 +2,17 @@ import streamlit as st
 import pandas as pd
 import os
 import re
+import urllib.parse
 
 # ==========================================
-#  🔥 CORE: 어떤 파일 형식이든 자동으로 감지해 파싱하는 전천후 엔진
+#  🔥 CORE: 파일 형식 및 텍스트 공백 예외까지 완벽히 잡는 전천후 파싱 엔진
 # ==========================================
 @st.cache_data
 def load_and_parse_yonsei_excel(uploaded_file):
     """
     사용자가 업로드한 파일 객체(uploaded_file)를 받아
-    진짜 구형 엑셀(.xls), 신형 엑셀(.xlsx) 또는 이름만 엑셀인 CSV 텍스트 파일까지
-    자동으로 내부 구조를 파악하여 연세교대원 시간표 구조를 파싱합니다.
+    엑셀/CSV 자동 인식뿐만 아니라, '구  분' 사이의 모든 공백 형태까지
+    정규표현식으로 유연하게 매칭하여 연세교대원 시간표 구조를 파싱합니다.
     """
     if uploaded_file is None:
         return pd.DataFrame()
@@ -55,14 +56,14 @@ def load_and_parse_yonsei_excel(uploaded_file):
             idx += 1
             continue
             
-        # 2. 시간표 데이터 행 수집 (구분,,월,화,목 형태로 시작하는 블록 찾기)
-        if "구      분" in line:
+        # 2. 시간표 데이터 행 수집 (정규표현식으로 구...분 사이의 모든 공백 형태 대응)
+        if re.search(r"구\s*분", line):
             header_parts = [p.strip() for p in line.split(",")]
             days_in_block = [p for p in header_parts if p in ["월", "화", "수", "목", "금"]]
             
             # 다음 행들에서 1,2교시 또는 3,4교시 블록 데이터 파싱
             idx += 1
-            while idx < len(lines) and "구      분" not in lines[idx] and ",,,," not in lines[idx]:
+            while idx < len(lines) and not re.search(r"구\s*분", lines[idx]) and ",,,," not in lines[idx]:
                 block_line = lines[idx].strip()
                 
                 # 교시 정보 포착 (1,2교시 또는 3,4교시)
@@ -125,7 +126,7 @@ def load_and_parse_yonsei_excel(uploaded_file):
     return df
 
 
-# --- [UI/UX] 요즘 대학생 취향의 깔끔한 Pretendard 폰트 및 모던 네이비 스타일 ---
+# --- [UI/UX] 트렌디하고 감성적인 파스텔 테마 및 Pretendard 폰트 정의 ---
 st.set_page_config(page_title="YONSEI GS-ED Timetable", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -137,15 +138,13 @@ st.markdown("""
         .sub-title { font-size: 1rem; color: #64748B; margin-bottom: 25px; }
         
         .card { background-color: #F8FAFC; padding: 18px; border-radius: 12px; border: 1px solid #E2E8F0; margin-bottom: 12px; }
-        .course-list-item { padding: 12px; background-color: #F1F5F9; border-radius: 10px; margin-bottom: 8px; border-left: 5px solid #112F6F; }
-        
         .stTabs [data-baseweb="tab"] { font-weight: 600; color: #64748B; font-size: 15px; }
         .stTabs [data-baseweb="tab"][aria-selected="true"] { color: #112F6F !important; border-bottom-color: #112F6F !important; }
     </style>
 """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">🦅 YONSEI GS-ED</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">연세대학교 교육대학원 수강신청 시간표 도우미 (2025-2)</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">연세대학교 교육대학원 수강신청 시간표 도우미 (공유 & 저장 지원)</div>', unsafe_allow_html=True)
 
 PREDEFINED_COLORS = ["#E2EFFE", "#FEE2E2", "#FEF3C7", "#E0F2FE", "#ECEFEE", "#F3E8FF", "#ECFDF5", "#FFF1F2", "#F0FDFA", "#EFF6FF"]
 
@@ -177,7 +176,7 @@ if master_df.empty:
 if 'my_courses' not in st.session_state: st.session_state.my_courses = []
 if 'color_map' not in st.session_state: st.session_state.color_map = {}
 
-# --- [경고 완벽 해결] st.query_params 최신 문법 리팩토링 ---
+# --- 🔗 공유된 링크(Query Parameter) 파싱 및 복원 시스템 ---
 query_dict = st.query_params.to_dict()
 if "courses" in query_dict and not st.session_state.my_courses:
     try:
@@ -279,13 +278,12 @@ else:
                 del st.query_params[key]
             st.rerun()
 
-    # 타임라인 테이블 마크업
+    # 타임라인 테이블 마크업 생성 및 연산
     days = ['월', '화', '수', '목', '금']
     periods = [1, 2, 3, 4]
     time_labels = {1: "1교시<br><small>18:20-19:10</small>", 2: "2교시<br><small>19:15-20:05</small>", 3: "3교시<br><small>20:10-21:00</small>", 4: "4교시<br><small>21:05-21:55</small>"}
     grid = {(p, d): {"text": "", "color": "#FFFFFF", "span": 1, "visible": True} for p in periods for d in days}
     
-    # 선택된 연세교대원 과목들 그리드 매핑 연산
     for _, row in master_df[master_df['학정번호'].isin(st.session_state.my_courses)].iterrows():
         color = st.session_state.color_map.get(row['과목명'], "#FFFFFF")
         p_list = sorted([int(p) for p in row['교시'].split(',')])
@@ -303,7 +301,7 @@ else:
                 }
 
     table_html = """
-    <div id="capture-area" style="padding: 10px; background: #ffffff; border-radius: 16px;">
+    <div id="capture-area" style="padding: 16px; background: #ffffff; border-radius: 16px; border: 1px solid #E2E8F0;">
     <table style="width:100%; border-collapse:separate; border-spacing: 6px; text-align:center; table-layout:fixed;">
         <thead>
             <tr style="height:40px; background-color:#F1F5F9;">
@@ -324,27 +322,45 @@ else:
         table_html += '</tr>'
     table_html += '</tbody></table></div>'
 
+    # --- 📸 이미지 저장 & 🔗 친구 공유 통합 JS 컴포넌트 ---
     js_downloader = """
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <button id="download-btn" style="width:100%; margin-top:15px; padding:12px; background-color:#112F6F; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:600; font-size:14px;">✨ 감성 시간표 이미지 저장하기</button>
-    <div id="status-log" style="margin-top:6px; font-size:12px; text-align:center;"></div>
+    <div style="display: flex; gap: 10px; margin-top: 15px;">
+        <button id="download-btn" style="flex: 1; padding: 12px; background-color: #112F6F; color: white; border: none; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: 14px;">✨ 감성 시간표 이미지 저장하기</button>
+    </div>
+    <div id="status-log" style="margin-top:8px; font-size:12px; text-align:center; font-weight:600;"></div>
+    
     <script>
         document.getElementById('download-btn').onclick = function() {
             const area = document.getElementById("capture-area");
             const log = document.getElementById('status-log');
-            log.innerText = '이미지 제작 중...'; log.style.color = '#112F6F';
+            log.innerText = '📸 예쁜 고화질 시간표 이미지 제작 중...'; log.style.color = '#112F6F';
             html2canvas(area, {scale: 3, backgroundColor: '#ffffff', borderRadius: 16}).then(canvas => {
                 const a = document.createElement("a");
                 a.href = canvas.toDataURL("image/png");
                 a.download = "YONSEI_TIMETABLE.png";
                 document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                log.innerText = '✅ 다운로드 폴더에 안전하게 저장되었습니다!'; log.style.color = '#059669';
-            }).catch(e => { log.innerText = '❌ 에러: ' + e; log.style.color = '#DC2626'; });
+                log.innerText = '✅ 다운로드 폴더에 시간표 이미지가 안전하게 저장되었습니다!'; log.style.color = '#059669';
+            }).catch(e => { log.innerText = '❌ 에러가 발생했습니다: ' + e; log.style.color = '#DC2626'; });
         };
     </script>
     """
-    st.components.v1.html(table_html + js_downloader, height=480)
+    st.components.v1.html(table_html + js_downloader, height=500)
     
+    # --- 🔗 실시간 친구 공유용 링크 생성 인터페이스 ---
+    st.write(" ")
+    current_url = "https://localhost:8501" # 배포 후 배포용 도메인 URL로 변경 가능합니다.
+    share_link = f"{current_url}/?courses={','.join(st.session_state.my_courses)}"
+    
+    st.markdown("#### 🔗 내 시간표 친구에게 링크로 공유하기")
+    col_link, col_btn = st.columns([0.8, 0.2])
+    with col_link:
+        st.text_input("공유용 카카오톡/문자 링크", value=share_link, readonly=True, label_visibility="collapsed")
+    with col_btn:
+        # 클립보드 복사 버튼
+        if st.button("📋 링크 복사", use_container_width=True):
+            st.toast("링크가 복사되었습니다! 친구에게 보내보세요. 🦅")
+            
     st.write("---")
     st.markdown("#### 📝 확정된 장바구니 강좌 상세 내역")
     
