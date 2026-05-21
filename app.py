@@ -1,395 +1,338 @@
 import streamlit as st
 import pandas as pd
-import os
-import re
 
-# --- 1. 파일 분석 및 년도/학기 동적 추출 함수 ---
-def detect_year_semester(file_path):
-    """
-    파일명과 엑셀 내용에서 년도와 학기를 자동으로 추출합니다.
-    기본값은 현재 기준으로 설정하되, 파일에서 발견되면 해당 값으로 변경합니다.
-    """
-    year = "2026"
-    semester = "1학기"
-    
-    # 1. 파일명에서 추출 시도 (예: time_table1(2025-2).xls -> 2025년 2학기)
-    base_name = os.path.basename(file_path)
-    match_file = re.search(r'(\d{4})[-_](\d)', base_name)
-    if match_file:
-        year = match_file.group(1)
-        semester = f"{match_file.group(2)}학기"
-        return year, semester
+# --- [UI 개선] 메인 페이지 레이아웃 및 트렌디한 스타일 커스텀 ---
+st.set_page_config(page_title="YONSEI GS-ED Timetable", layout="wide", initial_sidebar_state="expanded")
 
-    # 2. 파일명에 정보가 없을 경우 엑셀 상단 텍스트 검색 (안전장치)
-    try:
-        df_check = pd.read_excel(file_path, nrows=5, header=None)
-        for col in df_check.columns:
-            for val in df_check[col].dropna().astype(str):
-                match_content = re.search(r'(\d{4})학년도\s*(\d)학기', val)
-                if match_content:
-                    year = match_content.group(1)
-                    semester = f"{match_content.group(2)}학기"
-                    return year, semester
-    except:
-        pass
+# 요즘 대학생들이 선호하는 깔끔한 미니멀리즘 + 네이비 포인트 CSS 적용
+st.markdown("""
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;800&display=swap');
         
-    return year, semester
-
-# --- 2. 연대 교대원 전용 엑셀 파서 (Raw 데이터 변환) ---
-def parse_yonsei_graduate_excel(file_path):
-    """
-    연세대 교육대학원 특유의 세로 나열형 정형/비정형 엑셀을 
-    Streamlit에서 검색 및 필터링이 가능한 클린 데이터프레임으로 변환합니다.
-    """
-    try:
-        # 다양한 엑셀 포맷 대응을 위해 엔진 지정 없이 로드
-        df_raw = pd.read_excel(file_path, header=None)
-    except Exception as e:
-        st.error(f"엑셀 파일을 읽는 중 오류가 발생했습니다: {e}")
-        return None
-
-    all_courses = []
-    current_major = "공통/교직" # 기본 섹션명
-    
-    row_idx = 0
-    total_rows = len(df_raw)
-    
-    while row_idx < total_rows:
-        row_vals = df_raw.iloc[row_idx].dropna().tolist()
-        row_str = " ".join([str(x) for x in row_vals])
+        * { font-family: 'Pretendard', sans-serif !important; }
         
-        # 1. 전공 섹션 타이틀 감지 (예: "평생교육경영 .... 주임교수 : OOO")
-        if "주임교수" in row_str or "시각디자인교육" in row_str or "조리교육" in row_str:
-            for val in row_vals:
-                val_str = str(val)
-                if "주임교수" in val_str:
-                    major_clean = val_str.split("주임교수")[0].strip()
-                    if major_clean:
-                        current_major = re.sub(r'\s+', '', major_clean).replace("구분", "").strip()
-                        break
-            row_idx += 1
-            continue
-            
-        # 2. 요일 헤더 행 스킵 ("구분", "월", "화", "목" 등)
-        if "구      분" in row_str or "구분" in row_str:
-            row_idx += 1
-            continue
-            
-        # 3. 교시 및 시간 블록 감지
-        first_cell = str(df_raw.iloc[row_idx, 0]) if pd.notna(df_raw.iloc[row_idx, 0]) else ""
-        if "교시" in first_cell or "동영상" in first_cell:
-            time_slot_text = first_cell 
-            sub_row = row_idx + 1
-            
-            # 현재 시간 블록의 가로 컬럼 매핑 정보 확인 (월, 화, 수, 목, 금, 토)
-            day_cols = {}
-            for col_c in range(1, len(df_raw.columns)):
-                for lookup_r in range(max(0, row_idx-2), row_idx):
-                    val_lookup = str(df_raw.iloc[lookup_r, col_c])
-                    for d in ['월', '화', '수', '목', '금', '토']:
-                        if d in val_lookup and len(val_lookup.strip()) <= 2:
-                            day_cols[col_c] = d
-            
-            course_blocks = {} 
-            
-            while sub_row < total_rows:
-                next_first_cell = str(df_raw.iloc[sub_row, 0]) if pd.notna(df_raw.iloc[sub_row, 0]) else ""
-                next_row_str = " ".join([str(x) for x in df_raw.iloc[sub_row].dropna().tolist()])
-                
-                # 다음 블록을 만나면 정지
-                if "교시" in next_first_cell or "주임교수" in next_row_str or "구      분" in next_first_cell:
-                    break
-                    
-                label_cell = str(df_raw.iloc[sub_row, 1]) if pd.notna(df_raw.iloc[sub_row, 1]) else ""
-                
-                for c_idx in day_cols.keys():
-                    val = df_raw.iloc[sub_row, c_idx]
-                    if pd.notna(val) and str(val).strip():
-                        if c_idx not in course_blocks:
-                            course_blocks[c_idx] = {"요일": day_cols[c_idx], "시간텍스트": time_slot_text}
-                        
-                        clean_label = label_cell.replace(" ", "").strip()
-                        if "과목종별" in clean_label or "종별" in clean_label:
-                            course_blocks[c_idx]["이수구분"] = str(val).strip()
-                        elif "학정번호" in clean_label or "코드" in clean_label:
-                            course_blocks[c_idx]["교과목코드"] = str(val).strip()
-                        elif "과목명" in clean_label:
-                            course_blocks[c_idx]["교과목명"] = str(val).strip()
-                        elif "교수명" in clean_label:
-                            course_blocks[c_idx]["교수명"] = str(val).strip()
-                        elif "강의실" in clean_label:
-                            course_blocks[c_idx]["강의실"] = str(val).strip()
-                            
-                sub_row += 1
-            
-            # 수집된 과목 블록들 마스터 리스트에 추가
-            for c_idx, c_data in course_blocks.items():
-                if "교과목명" in c_data and "교과목코드" in c_data:
-                    c_data["학점"] = 2  # 대학원 과목 기본 2학점 설정
-                    if "논문" in c_data["교과목명"]:
-                        c_data["이수구분"] = "논문/연구"
-                    
-                    c_data["전공분류"] = current_major
-                    c_data["분반"] = 1
-                    
-                    code_raw = c_data["교과목코드"]
-                    if "-" in code_raw:
-                        parts = code_raw.split("-")
-                        c_data["교과목코드"] = parts[0]
-                        try:
-                            c_data["분반"] = int(parts[1])
-                        except:
-                            pass
-                            
-                    all_courses.append(c_data)
-                    
-            row_idx = sub_row
-            continue
-            
-        row_idx += 1
-
-    df_result = pd.DataFrame(all_courses)
-    
-    # 빈 컬럼 방어 코드
-    for col in ["교과목명", "교수명", "학점", "이수구분", "전공분류", "분반", "강의실", "교과목코드", "요일", "시간텍스트"]:
-        if col not in df_result.columns:
-            df_result[col] = ""
-            
-    # 시간표 격자 배치를 위한 교시 계산 함수
-    def calculate_slots(row):
-        slots = set()
-        day = row['요일']
-        time_text = row['시간텍스트']
+        /* 메인 타이틀 스타일 */
+        .main-title {
+            font-size: 2.2rem; font-weight: 800; color: #112F6F; margin-bottom: 5px;
+        }
+        .sub-title {
+            font-size: 1rem; color: #666; margin-bottom: 25px;
+        }
         
-        if not day or not time_text:
-            return slots
-            
-        # "1,2교시" 등 교시 추출
-        periods = [int(x) for x in re.findall(r'(\d+)\s*교시', time_text)]
+        /* 카드형 보드 스타일 */
+        .card {
+            background-color: #F8FAFC; padding: 20px; border-radius: 12px;
+            border: 1px solid #E2E8F0; margin-bottom: 15px;
+        }
         
-        if not periods:
-            digit_find = [int(x) for x in re.findall(r'\d+', time_text.split("오후")[0])]
-            if digit_find:
-                periods = digit_find
-                
-        for p in periods:
-            slots.add((day, p))
-        return slots
-
-    if not df_result.empty:
-        df_result['time_slots_set'] = df_result.apply(calculate_slots, axis=1)
-    else:
-        df_result['time_slots_set'] = [set() for _ in range(len(df_result))]
+        /* 탭 가독성 개선 */
+        .stTabs [data-baseweb="tab"] {
+            font-weight: 600; color: #64748B; font-size: 15px;
+        }
+        .stTabs [data-baseweb="tab"][aria-selected="true"] {
+            color: #112F6F !important; border-bottom-color: #112F6F !important;
+        }
         
-    return df_result
+        /* 제거 버튼 미니멀화 */
+        .stButton>button {
+            border-radius: 8px; transition: all 0.2s;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
+# 메인 헤더 배너
+st.markdown('<div class="main-title">🦅 YONSEI GS-ED</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">연세대학교 교육대학원 수강신청 시간표 시뮬레이터 (2025-2)</div>', unsafe_allow_html=True)
 
-# --- 3. Streamlit 앱 메인 로직 구동 ---
-
-# 현재 폴더 안의 모든 엑셀 파일 중 가장 첫 번째 파일을 타겟팅 (자동 인식)
-excel_files = [f for f in os.listdir('.') if f.endswith(('.xls', '.xlsx'))]
-excel_file_path = excel_files[0] if excel_files else 'time_table1(2025-2).xls'
-
-# 파일 명에 기반해 해당 학년도와 학기를 화면에 동적으로 주입
-if os.path.exists(excel_file_path):
-    target_year, target_semester = detect_year_semester(excel_file_path)
-else:
-    target_year, target_semester = "2025", "2학기"
-
-st.set_page_config(page_title="연세대학교 교육대학원 시간표 도우미", layout="wide")
-st.title(f"🦅 연세대학교 교육대학원 [{target_year}학년도 {target_semester}] 시간표 도우미")
-
-st.markdown(f"📂 분석된 시간표 데이터 원본 파일: `{excel_file_path}`")
-
-with st.expander("✨ 주요 기능 및 사용 안내 (클릭하여 확인)"):
-    st.info(
-        f"""
-        * **{target_year}학년도 {target_semester} 완벽 호환**: 입력하신 엑셀 파일 양식을 자동 추적하여 화면의 모든 년도와 학기 텍스트를 연동합니다.
-        * **시간 및 과목 중복 방지**: 현재 내 시간표와 시간이 겹치는 과목은 아래 리스트에서 실시간으로 필터링되어 사라집니다.
-        * **🔗 URL 실시간 공유**: 시간표를 다 짠 후 브라우저 주소창의 링크를 복사해 원우들에게 공유하면 내가 짠 조합 그대로 상대방 화면에 나타납니다.
-        """
-    )
-
-if not os.path.exists(excel_file_path):
-    st.error(f"📌 폴더 내에 엑셀 파일이 없습니다. 수강 편람 엑셀 파일을 이 app.py와 같은 폴더에 넣어주세요.")
-    st.stop()
-
-master_df = parse_yonsei_graduate_excel(excel_file_path)
-
-# 시간표 셀 전용 파스텔톤 컬러 팔레트
+# --- 색상 팔레트 (요즘 유행하는 차분한 파스텔 톤) ---
 PREDEFINED_COLORS = [
-    "#8dd3c7", "#ffffb3", "#bebada", "#fb8072", "#80b1d3", "#fdb462",
-    "#b3de69", "#fccde5", "#d9d9d9", "#bc80bd", "#ccebc5", "#ffed6f"
+    "#E2EFFE", "#FEE2E2", "#FEF3C7", "#E0F2FE", "#ECEFEE", 
+    "#F3E8FF", "#ECFDF5", "#FFF1F2", "#F0FDFA", "#EFF6FF"
 ]
 
-if master_df is not None and not master_df.empty:
-    if 'my_courses' not in st.session_state: st.session_state.my_courses = []
-    if 'color_map' not in st.session_state: st.session_state.color_map = {}
+# --- 데이터셋 로드 (제공된 CSV 기반 정제 데이터) ---
+@st.cache_data
+def load_yonsei_data():
+    raw_data = [
+        # 교직일반, 논문, 교직이론 및 교직소양
+        {"전공": "교직(공통)", "요일": "월", "교시": "1,2", "과목종별": "교직", "학정번호": "SPG6824-01", "과목명": "한국교육의 역사", "교수명": "이원재", "강의실": "교302", "학점": 3}, [cite: 1]
+        {"전공": "교직(공통)", "요일": "화", "교시": "1,2", "과목종별": "교직", "학정번호": "SPG6858-01", "과목명": "교사의인식및실천연구(영어)", "교수명": "임웅", "강의실": "교304", "학점": 3}, [cite: 1]
+        {"전공": "교직(공통)", "요일": "화", "교시": "1,2", "과목종별": "교직", "학정번호": "SPG6862-01", "과목명": "학습과학", "교수명": "이희승", "강의실": "교310", "학점": 3}, [cite: 1]
+        {"전공": "교직(공통)", "요일": "목", "교시": "1,2", "과목종별": "교직", "학정번호": "SPG6867-01", "과목명": "교육자를위한인공지능입문", "교수명": "강근영", "강의실": "교302", "학점": 3}, [cite: 1]
+        {"전공": "교직(공통)", "요일": "월", "교시": "3,4", "과목종별": "교직", "학정번호": "SPG6860-01", "과목명": "연세와교사의사명", "교수명": "곽호철", "강의실": "교603", "학점": 3}, [cite: 1]
+        {"전공": "교직(공통)", "요일": "월", "교시": "3,4", "과목종별": "교직", "학정번호": "SPG6869-01", "과목명": "교육현장을위한문학읽기", "교수명": "곽수범", "강의실": "교601", "학점": 3}, [cite: 1, 2]
+        {"전공": "교직(공통)", "요일": "화", "교시": "3,4", "과목종별": "교직", "학정번호": "SPG6864-01", "과목명": "박물관교육", "교수명": "국성하", "강의실": "교405", "학점": 3}, [cite: 1]
+        {"전공": "교직(공통)", "요일": "화", "교시": "3,4", "과목종별": "교직", "학정번호": "SPG6838-01", "과목명": "교육과일의세계", "교수명": "한수정", "강의실": "교302", "학점": 3}, [cite: 1, 2]
+        {"전공": "교직(공통)", "요일": "화", "교시": "3,4", "과목종별": "교직", "학정번호": "SPG6859-01", "과목명": "인공지능시대의과학기술과교육(영어)", "교수명": "임웅", "강의실": "교304", "학점": 3}, [cite: 2]
+        {"전공": "교직(공통)", "요일": "화", "교시": "3,4", "과목종별": "교직", "학정번호": "SPG6853-01", "과목명": "학습동기", "교수명": "김은주", "강의실": "위204", "학점": 3}, [cite: 2]
+        {"전공": "교직(공통)", "요일": "화", "교시": "3,4", "과목종별": "교직", "학정번호": "SPG6831-01", "과목명": "영재교육의이론과실제", "교수명": "윤성로", "강의실": "교306", "학점": 3}, [cite: 2]
+        {"전공": "교직(공통)", "요일": "목", "교시": "3,4", "과목종별": "교직", "학정번호": "SPG6863-01", "과목명": "교사론", "교수명": "국성하", "강의실": "교404", "학점": 3}, [cite: 1]
+        {"전공": "교직(공통)", "요일": "목", "교시": "3,4", "과목종별": "교직", "학정번호": "SPG6868-01", "과목명": "교육자를위한인공지능과코딩기초(영어)", "교수명": "한수연", "강의실": "교304", "학점": 3}, [cite: 1, 2]
+        
+        # 교직이론 및 교직소양 (1,2교시)
+        {"전공": "교직(자격증)", "요일": "월", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6662-01", "과목명": "교육철학및교육사", "교수명": "황금중", "강의실": "교404", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "월", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6644-01", "과목명": "교육사회학", "교수명": "김영미", "강의실": "교306", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "월", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6668-01", "과목명": "교직실무", "교수명": "심연식", "강의실": "교303", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "월", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6661-01", "과목명": "교육행정및교육경영", "교수명": "유동훈", "강의실": "교308", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6643-02", "과목명": "교육심리학", "교수명": "원영실", "강의실": "교410", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6663-02", "과목명": "교육방법및교육공학", "교수명": "김은주", "강의실": "교405", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6662-03", "과목명": "교육철학및교육사", "교수명": "국성하", "강의실": "교404", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6664-01", "과목명": "교육과정", "교수명": "양은배", "강의실": "백S408", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6659-02", "과목명": "교육학개론", "교수명": "이원재", "강의실": "교303", "학점": 2}, [cite: 3, 4]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6666-01", "과목명": "생활지도및상담", "교수명": "양승민", "강의실": "교402", "학점": 2}, [cite: 4]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6668-03", "과목명": "교직실무", "교수명": "신명미", "강의실": "교101", "학점": 2}, [cite: 4]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6667-01", "과목명": "특수교육학개론", "교수명": "윤성로", "강의실": "교306", "학점": 2}, [cite: 4]
+        {"전공": "교직(자격증)", "요일": "목", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6667-02", "과목명": "특수교육학개론", "교수명": "김지영", "강의실": "교303", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "목", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6645-03", "과목명": "학교폭력예방및학생의이해", "교수명": "류부열", "강의실": "교404", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "목", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6665-01", "과목명": "교육평가", "교수명": "김주아", "강의실": "교402", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "목", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6658-01", "과목명": "교육실습", "교수명": "국성하", "강의실": "교410", "학점": 2}, [cite: 3]
+        {"전공": "교직(자격증)", "요일": "목", "교시": "1,2", "과목종별": "교직", "학정번호": "SPT6672-01", "과목명": "디지털교육", "교수명": "장은실", "강의실": "교405", "학점": 2}, [cite: 3, 4]
+        
+        # 교직이론 및 교직소양 (3,4교시)
+        {"전공": "교직(자격증)", "요일": "월", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6662-02", "과목명": "교육철학및교육사", "교수명": "국성하", "강의실": "교404", "학점": 2}, [cite: 5]
+        {"전공": "교직(자격증)", "요일": "월", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6645-01", "과목명": "학교폭력예방및학생의이해", "교수명": "서정기", "강의실": "교302", "학점": 2}, [cite: 5]
+        {"전공": "교직(자격증)", "요일": "월", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6659-01", "과목명": "교육학개론", "교수명": "한수정", "강의실": "교405", "학점": 2}, [cite: 5]
+        {"전공": "교직(자격증)", "요일": "월", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6663-01", "과목명": "교육방법및교육공학", "교수명": "신소영", "강의실": "교402", "학점": 2}, [cite: 6]
+        {"전공": "교직(자격증)", "요일": "월", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6643-01", "과목명": "교육심리학", "교수명": "김정민", "강의실": "교410", "학점": 2}, [cite: 6]
+        {"전공": "교직(자격증)", "요일": "월", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6668-02", "과목명": "교직실무", "교수명": "심연식", "강의실": "교303", "학점": 2}, [cite: 6]
+        {"전공": "교직(자격증)", "요일": "월", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6661-02", "과목명": "교육행정및교육경영", "교수명": "유동훈", "강의실": "교306", "학점": 2}, [cite: 6]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6643-03", "과목명": "교육심리학", "교수명": "원영실", "강의실": "교410", "학점": 2}, [cite: 5]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6645-02", "과목명": "학교폭력예방및학생의이해", "교수명": "서정기", "강의실": "교101", "학점": 2}, [cite: 5]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6659-03", "과목명": "교육학개론", "교수명": "이원재", "강의실": "교303", "학점": 2}, [cite: 5]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6664-02", "과목명": "교육과정", "교수명": "함영기", "강의실": "교404", "학점": 2}, [cite: 6]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6666-02", "과목명": "생활지도및상담", "교수명": "양승민", "강의실": "교402", "학점": 2}, [cite: 6]
+        {"전공": "교직(자격증)", "요일": "화", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6668-05", "과목명": "교직실무", "교수명": "곽수범", "강의실": "위203호", "학점": 2}, [cite: 6]
+        {"전공": "교직(자격증)", "요일": "목", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6667-03", "과목명": "특수교육학개론", "교수명": "김지영", "강의실": "교303", "학점": 2}, [cite: 5]
+        {"전공": "교직(자격증)", "요일": "목", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6665-02", "과목명": "교육평가", "교수명": "김주아", "강의실": "교402", "학점": 2}, [cite: 5]
+        {"전공": "교직(자격증)", "요일": "목", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6672-02", "과목명": "디지털교육", "교수명": "장은실", "강의실": "교405", "학점": 2}, [cite: 5]
+        {"전공": "교직(자격증)", "요일": "목", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6668-04", "과목명": "교직실무", "교수명": "심연식", "강의실": "교303", "학점": 2}, [cite: 6]
+        {"전공": "교직(자격증)", "요일": "목", "교시": "3,4", "과목종별": "교직", "학정번호": "SPT6644-02", "과목명": "교육사회학", "교수명": "김영미", "강의실": "교404", "학점": 2}, [cite: 6]
+        
+        # 평생교육사
+        {"전공": "평생교육사", "요일": "수", "교시": "1,2", "과목종별": "교직", "학정번호": "SPL6691", "과목명": "평생교육프로그램개발론", "교수명": "최유연", "강의실": "교402", "학점": 3}, [cite: 7]
+        {"전공": "평생교육사", "요일": "수", "교시": "1,2", "과목종별": "교직", "학정번호": "SPL6650", "과목명": "평생교육론", "교수명": "이상오", "강의실": "교404", "학점": 3}, [cite: 7]
+        {"전공": "평생교육사", "요일": "수", "교시": "1,2", "과목종별": "교직", "학정번호": "SPL6684", "과목명": "평생교육경영론", "교수명": "신경석", "강의실": "교405", "학점": 3}, [cite: 7]
+        {"전공": "평생교육사", "요일": "금", "교시": "1,2", "과목종별": "교직", "학정번호": "SPL6692", "과목명": "평생교육실습", "교수명": "한수정", "강의실": "교404", "학점": 3}, [cite: 7]
+        {"전공": "평생교육사", "요일": "금", "교시": "1,2", "과목종별": "교직", "학정번호": "SPL6690", "과목명": "평생교육방법론", "교수명": "임현민", "강의실": "교402", "학점": 3}, [cite: 7]
 
-    # URL 공유 파라미터 복원 기능
-    if "courses" in st.query_params and not st.session_state.my_courses:
-        try:
-            courses_str = st.query_params.get("courses")
-            if courses_str:
-                shared_courses = []
-                for item in courses_str.split(','):
-                    if '-' in item:
-                        code, no = item.split('-')
-                        no = int(no)
-                        if not master_df[(master_df['교과목코드'] == code) & (master_df['분반'] == no)].empty:
-                            shared_courses.append((code, no))
-                if shared_courses:
-                    st.session_state.my_courses = shared_courses
-                    for _, row in master_df[master_df.set_index(['교과목코드', '분반']).index.isin(shared_courses)].iterrows():
-                        if row['교과목명'] not in st.session_state.color_map:
-                            st.session_state.color_map[row['교과목명']] = PREDEFINED_COLORS[len(st.session_state.color_map) % len(PREDEFINED_COLORS)]
-                    st.rerun()
-        except:
+        # 교육공학
+        {"전공": "교육공학", "요일": "월", "교시": "1,2", "과목종별": "전공", "학정번호": "SET6602-01", "과목명": "교수학습이론", "교수명": "이명근", "강의실": "교606", "학점": 3}, [cite: 8]
+        {"전공": "교육공학", "요일": "화", "교시": "1,2", "과목종별": "전공", "학정번호": "SET6608-01", "과목명": "AI교육공학기초", "교수명": "김남주", "강의실": "교606", "학점": 3}, [cite: 8]
+        {"전공": "교육공학", "요일": "목", "교시": "1,2", "과목종별": "선택", "학정번호": "SET6652-01", "과목명": "원격교육론", "교수명": "이지영", "강의실": "교606", "학점": 3}, [cite: 8]
+        {"전공": "교육공학", "요일": "월", "교시": "3,4", "과목종별": "선택", "학정번호": "SET6678-01", "과목명": "교육공학연구자료분석", "교수명": "박종화", "강의실": "교606", "학점": 3}, [cite: 8]
+        {"전공": "교육공학", "요일": "화", "교시": "3,4", "과목종별": "선택", "학정번호": "SET6673-01", "과목명": "기업교육공학연구", "교수명": "백평구", "강의실": "교606", "학점": 3}, [cite: 8]
+
+        # 조기영어교육
+        {"전공": "조기영어교육", "요일": "월", "교시": "1,2", "과목종별": "선택", "학정번호": "SEC6711-01", "과목명": "조기영어교육과통계학", "교수명": "이민진", "강의실": "백S404", "학점": 3}, [cite: 22]
+        {"전공": "조기영어교육", "요일": "화", "교시": "1,2", "과목종별": "전공", "학정번호": "SEC6701-01", "과목명": "조기영어교육연구방법론", "교수명": "이희경", "강의실": "교517", "학점": 3}, [cite: 22]
+        {"전공": "조기영어교육", "요일": "목", "교시": "1,2", "과목종별": "전공", "학정번호": "SEC6606-01", "과목명": "영어학개론", "교수명": "김현우", "강의실": "백S204", "학점": 3}, [cite: 22]
+        {"전공": "조기영어교육", "요일": "화", "교시": "3,4", "과목종별": "전공", "학정번호": "SEC6602-01", "과목명": "음성음운론과영어발음교육", "교수명": "이석재", "강의실": "외326-1", "학점": 3}, [cite: 22, 23]
+        {"전공": "조기영어교육", "요일": "목", "교시": "3,4", "과목종별": "교직", "학정번호": "SEC6694-01", "과목명": "영어교육학특강", "교수명": "이명신", "강의실": "백S204", "학점": 3}, [cite: 22]
+
+        # AI융합교육
+        {"전공": "AI융합교육", "요일": "월", "교시": "1,2", "과목종별": "선택", "학정번호": "SAE6521-01", "과목명": "빅데이터와교육", "교수명": "한수연", "강의실": "교517", "학점": 3}, [cite: 26, 27]
+        {"전공": "AI융합교육", "요일": "화", "교시": "1,2", "과목종별": "선택", "학정번호": "SAE6527-01", "과목명": "AI활용융합교육방법", "교수명": "한수연", "강의실": "교603", "학점": 3}, [cite: 26, 27]
+        {"전공": "AI융합교육", "요일": "월", "교시": "3,4", "과목종별": "선택", "학정번호": "SAE6526-01", "과목명": "인공지능기술과윤리", "교수명": "임웅", "강의실": "교517", "학점": 3}, [cite: 27]
+        {"전공": "AI융합교육", "요일": "화", "교시": "3,4", "과목종별": "선택", "학정번호": "SAE6525-01", "과목명": "딥러닝입문", "교수명": "박헌우", "강의실": "교614", "학점": 3} [cite: 27]
+    ]
+    df = pd.DataFrame(raw_data)
+    df['time_slots_set'] = df.apply(lambda r: set((r['요일'], int(p)) for p in r['교시'].split(',')), axis=1)
+    return df
+
+master_df = load_yonsei_data()
+
+if 'my_courses' not in st.session_state: st.session_state.my_courses = []
+if 'color_map' not in st.session_state: st.session_state.color_map = {}
+
+# --- URL 읽기 및 상태 동기화 ---
+if "courses" in st.query_params and not st.session_state.my_courses:
+    try:
+        courses_str = st.query_params.get("courses")
+        if courses_str:
+            shared_courses = [c for c in courses_str.split(',') if not master_df[master_df['학정번호'] == c].empty]
+            if shared_courses:
+                st.session_state.my_courses = shared_courses
+                for h_no in shared_courses:
+                    name = master_df[master_df['학정번호'] == h_no].iloc[0]['과목명']
+                    if name not in st.session_state.color_map:
+                        st.session_state.color_map[name] = PREDEFINED_COLORS[len(st.session_state.color_map) % len(PREDEFINED_COLORS)]
+                st.rerun()
+    except Exception:
+        st.query_params.clear()
+
+# --- 중복 방지 실시간 필터 시스템 ---
+def get_available_courses(df, selected_ids):
+    if not selected_ids: return df
+    available_df = df[~df['학정번호'].isin(selected_ids)]
+    my_busy_slots = set().union(*df[df['학정번호'].isin(selected_ids)]['time_slots_set'])
+    return available_df[available_df['time_slots_set'].apply(lambda s: s.isdisjoint(my_busy_slots))]
+
+available_df = get_available_courses(master_df, st.session_state.my_courses)
+
+# ==========================================
+#  LAYOUT: 요즘 유행하는 2단 대시보드 레이아웃 (사이드바 필터 + 메인 타임라인)
+# ==========================================
+
+# 1. 사이드바 (컨트롤 패널 - 여기서 다 골라요!)
+with st.sidebar:
+    st.markdown("### 🛠️ 강좌 필터링 패널")
+    
+    search_query = st.text_input("🔎 과목명 또는 교수명 검색", placeholder="검색어 입력...").strip().lower()
+    
+    st.write("---")
+    
+    tab_m, tab_k = st.tabs(["🎓 전공 강좌", "🍎 교직/공통"])
+    
+    # 전공 탭 조회
+    with tab_m:
+        major_list = sorted([m for m in master_df['전공'].unique() if "교직" not in m and "평생" not in m])
+        selected_major = st.selectbox("전공학과", major_list)
+        
+        filtered_major = available_df[available_df['전공'] == selected_major]
+        if search_query:
+            filtered_major = filtered_major[filtered_major['과목명'].str.lower().str.contains(search_query) | filtered_major['교수명'].str.lower().str.contains(search_query)]
+            
+        if not filtered_major.empty:
+            sel_idx = st.selectbox("강좌 선택", options=filtered_major.index, format_func=lambda idx: f"{filtered_major.loc[idx]['과목명']} ({filtered_major.loc[idx]['교수명']})")
+            if st.button("➕ 전공 추가", use_container_width=True, type="primary"):
+                row = filtered_major.loc[sel_idx]
+                st.session_state.my_courses.append(row['학정번호'])
+                st.session_state.color_map[row['과목명']] = PREDEFINED_COLORS[len(st.session_state.color_map) % len(PREDEFINED_COLORS)]
+                st.query_params["courses"] = ",".join(st.session_state.my_courses)
+                st.rerun()
+        else:
+            st.caption("선택 가능한 전공 과목이 없습니다.")
+
+    # 교직 탭 조회
+    with tab_k:
+        kyojik_type = st.selectbox("교직구분", ["전체", "교직(공통)", "교직(자격증)", "평생교육사"])
+        filtered_k = available_df[available_df['전공'].str.contains("교직|평생")]
+        if kyojik_type != "전체":
+            filtered_k = filtered_k[filtered_k['전공'] == kyojik_type]
+        if search_query:
+            filtered_k = filtered_k[filtered_k['과목명'].str.lower().str.contains(search_query) | filtered_k['교수명'].str.lower().str.contains(search_query)]
+            
+        if not filtered_k.empty:
+            sel_idx_k = st.selectbox("강좌 선택", options=filtered_k.index, format_func=lambda idx: f"{filtered_k.loc[idx]['과목명']} ({filtered_k.loc[idx]['교수명']})")
+            if st.button("➕ 교직 추가", use_container_width=True, type="primary"):
+                row = filtered_k.loc[sel_idx_k]
+                st.session_state.my_courses.append(row['학정번호'])
+                st.session_state.color_map[row['과목명']] = PREDEFINED_COLORS[len(st.session_state.color_map) % len(PREDEFINED_COLORS)]
+                st.query_params["courses"] = ",".join(st.session_state.my_courses)
+                st.rerun()
+        else:
+            st.caption("선택 가능한 교직 과목이 없습니다.")
+
+# 2. 메인 화면 (나의 트렌디 시간표 시각화)
+if not st.session_state.my_courses:
+    st.info("💡 왼쪽 사이드바 패널에서 과목을 선택해 추가하면 실시간으로 감성적인 시간표 보드가 완성됩니다!")
+else:
+    my_df = master_df[master_df['학정번호'].isin(st.session_state.my_courses)]
+    total_credits = my_df['학점'].sum()
+    
+    # 학점 요약 뱃지 리포트 디자인
+    col_a, col_b = st.columns([0.75, 0.25])
+    with col_a:
+        st.markdown(f"### 🗓️ MY TIMETABLE `[ 총 {len(my_df)} 과목 / {total_credits} 학점 이수 중 ]`")
+    with col_b:
+        if st.button("🗑️ 전체 초기화", use_container_width=True):
+            st.session_state.my_courses, st.session_state.color_map = [], {}
             st.query_params.clear()
-
-    # 중복 시간 및 과목 필터링 함수
-    def get_available_courses(df, selected_list):
-        if not selected_list: return df
-        selected_codes = {c for c, n in selected_list}
-        avail = df[~df['교과목코드'].isin(selected_codes)]
-        
-        chosen_df = df[df.set_index(['교과목코드', '분반']).index.isin(selected_list)]
-        busy_slots = set().union(*chosen_df['time_slots_set']) if not chosen_df.empty else set()
-        if busy_slots:
-            avail = avail[avail['time_slots_set'].apply(lambda s: s.isdisjoint(busy_slots))]
-        return avail
-
-    available_df = get_available_courses(master_df, st.session_state.my_courses)
-
-    # --- UI 1. 필터링 및 검색 창 ---
-    st.subheader("🔍 1. 전공 및 교과목 검색")
-    col1, col2 = st.columns(2)
-    with col1:
-        majors = ["전체"] + sorted(master_df['전공분류'].unique().tolist())
-        selected_major = st.selectbox("세부 전공 필터", majors)
-    with col2:
-        types = ["전체"] + sorted(master_df['이수구분'].unique().tolist())
-        selected_type = st.selectbox("이수 구분 필터", types)
-
-    filtered_df = available_df.copy()
-    if selected_major != "전체":
-        filtered_df = filtered_df[filtered_df['전공분류'] == selected_major]
-    if selected_type != "전체":
-        filtered_df = filtered_df[filtered_df['이수구분'] == selected_type]
-
-    search_q = st.text_input("🔎 과목명 또는 교수명 검색 키워드 입력")
-    if search_q:
-        filtered_df = filtered_df[
-            filtered_df['교과목명'].str.contains(search_q, case=False, na=False) |
-            filtered_df['교수명'].str.contains(search_q, case=False, na=False)
-        ]
-
-    # 강좌 선택 박스 렌더링
-    if filtered_df.empty:
-        st.warning("선택 조건에 맞는 수강 가능 강좌가 없습니다.")
-    else:
-        def fmt_str(r):
-            time_lbl = r['시간텍스트'].replace('\n', ' ')
-            return f"[{r['전공분류']} / {r['이수구분']}] {r['교과목명']} ({r['교수명']}, {r['강의실'] or '강의실미정'}) | {time_lbl}"
-
-        selected_idx = st.selectbox("추가할 강좌 선택", filtered_df.index, format_func=lambda x: fmt_str(filtered_df.loc[x]))
-        
-        if st.button("🔥 내 시간표에 담기", use_container_width=True):
-            tgt = filtered_df.loc[selected_idx]
-            pair = (tgt['교과목코드'], tgt['분반'])
-            st.session_state.my_courses.append(pair)
-            if tgt['교과목명'] not in st.session_state.color_map:
-                st.session_state.color_map[tgt['교과목명']] = PREDEFINED_COLORS[len(st.session_state.color_map) % len(PREDEFINED_COLORS)]
-            st.query_params["courses"] = ",".join([f"{c}-{n}" for c, n in st.session_state.my_courses])
-            st.success(f"✅ '{tgt['교과목명']}' 추가 완료!")
             st.rerun()
 
-    st.divider()
-
-    # --- UI 2. 시간표 프리뷰 시각화 (연대 딥블루 스타일) ---
-    st.subheader("📅 2. 내 타임 테이블 (Preview)")
+    # --- HTML / CSS 기반 인스타 감성 낭낭한 미니멀 시간표 뷰포트 ---
+    days = ['월', '화', '수', '목', '금']
+    periods = [1, 2, 3, 4]
+    time_labels = {1: "1교시<br><small>18:20-19:10</small>", 2: "2교시<br><small>19:15-20:05</small>", 3: "3교시<br><small>20:10-21:00</small>", 4: "4교시<br><small>21:05-21:55</small>"}
     
-    if not st.session_state.my_courses:
-        st.info("과목을 선택하시면 시간표 격자가 동적으로 시각화됩니다.")
-    else:
-        my_df = master_df[master_df.set_index(['교과목코드', '분반']).index.isin(st.session_state.my_courses)]
+    grid = {(p, d): {"text": "", "color": "#FFFFFF", "span": 1, "visible": True} for p in periods for d in days}
+    
+    for _, row in my_df.iterrows():
+        color = st.session_state.color_map.get(row['과목명'], "#FFFFFF")
+        p_list = sorted([int(p) for p in row['교시'].split(',')])
         
-        days_to_show = ['월', '화', '수', '목', '금']
-        periods_to_show = [1, 2, 3, 4, 5, 6, 7]
-        
-        # 교육대학원 야간 시간 규정 매핑 테이블
-        time_labels = {
-            1: "1교시<br>(09:00~10:00)", 2: "2교시<br>(10:00~12:00)", 
-            3: "3교시<br>(12:00~14:00)", 4: "4교시<br>(14:00~16:00)",
-            5: "야간 1,2교시<br>(18:20~20:00)", 6: "야간 3,4교시<br>(20:10~21:50)",
-            7: "야간 5,6교시<br>(21:55~22:45)"
-        }
+        if len(p_list) == 2 and p_list[1] == p_list[0] + 1:
+            grid[(p_list[0], row['요일'])] = {
+                "text": f"<div style='font-weight:700; color:#1E293B; font-size:13px;'>{row['과목명']}</div><div style='font-size:11px; margin-top:4px; color:#64748B;'>{row['교수명']} · {row['강의실']}</div>",
+                "color": color, "span": 2, "visible": True
+            }
+            grid[(p_list[1], row['요일'])]["visible"] = False
+        else:
+            for p in p_list:
+                grid[(p, row['요일'])] = {
+                    "text": f"<div style='font-weight:700; color:#1E293B; font-size:13px;'>{row['과목명']}</div><div style='font-size:11px; margin-top:4px; color:#64748B;'>{row['교수명']} · {row['강의실']}</div>",
+                    "color": color, "span": 1, "visible": True
+                }
 
-        grid = {(p, d): {"text": "", "color": "white"} for p in periods_to_show for d in days_to_show}
-        
-        for _, r in my_df.iterrows():
-            color = st.session_state.color_map.get(r['교과목명'], "white")
-            cell_text = f"<b>{r['교과목명']}</b><br><span style='font-size:0.9em;'>{r['교수명']}<br>({r['강의실'] or '미정'})</span>"
-            for (d, p) in r['time_slots_set']:
-                if (p, d) in grid:
-                    grid[(p, d)] = {"text": cell_text, "color": color}
+    # 고급 테이블 스타일링 마크업 언어 주입
+    table_html = """
+    <div id="capture-area" style="padding: 10px; background: #ffffff; border-radius: 16px;">
+    <table style="width:100%; border-collapse:separate; border-spacing: 6px; text-align:center; table-layout:fixed;">
+        <thead>
+            <tr style="height:40px; background-color:#F1F5F9;">
+                <th style="border-radius:8px; color:#475569; font-size:12px; font-weight:600; width:13%;">TIME</th>
+    """
+    for d in days:
+        table_html += f'<th style="border-radius:8px; color:#475569; font-size:13px; font-weight:600;">{d}</th>'
+    table_html += '</tr></thead><tbody>'
+    
+    for p in periods:
+        table_html += f'<tr style="height:85px;"><td style="background-color:#F8FAFC; border-radius:8px; color:#64748B; font-size:11px; font-weight:600; padding:5px; line-height:1.4;">{time_labels[p]}</td>'
+        for d in days:
+            cell = grid[(p, d)]
+            if cell["visible"]:
+                bg = cell["color"]
+                border_radius = "border-radius: 10px;" if cell["text"] else "border-radius: 10px; background-color:#F8FAFC; border: 1px dashed #E2E8F0;"
+                table_html += f'<td rowspan="{cell["span"]}" style="{border_radius} background-color:{bg}; padding:10px; transition:all 0.2s;">{cell["text"]}</td>'
+        table_html += '</tr>'
+    table_html += '</tbody></table></div>'
 
-        col_w = 90 / len(days_to_show)
-        th_html = "".join([f"<th width='{col_w}%'>{d}요일</th>" for d in days_to_show])
-        
-        tr_html = ""
-        for p in periods_to_show:
-            tr_html += f"<tr><td class='time-header'><b>{time_labels[p]}</b></td>"
-            for d in days_to_show:
-                cell = grid[(p, d)]
-                tr_html += f"<td style='background-color:{cell['color']};'>{cell['text']}</td>"
-            tr_html += "</tr>"
-
-        html_code = f"""
-        <style>
-            .tt-table {{ width:100%; border-collapse:collapse; table-layout:fixed; font-family:-apple-system,sans-serif; }}
-            .tt-table th, .tt-table td {{ border:1px solid #dbe2ef; text-align:center; vertical-align:middle; padding:8px; height:75px; font-size:13px; word-break:keep-all; }}
-            .tt-table th {{ background-color:#002060; color:white; font-weight:bold; }}
-            .time-header {{ background-color:#f8f9fa; font-size:11px; color:#495057; }}
-        </style>
-        <div id='timetable-area'>
-            <table class='tt-table'>
-                <tr><th width='10%'>시간</th>{th_html}</tr>
-                {tr_html}
-            </table>
-        </div>
-        """
-        st.components.v1.html(html_code, height=620)
-
-        # 하단 선택 과목 리스트 관리 및 전체 초기화
-        st.write("---")
-        l_col, r_col = st.columns([0.8, 0.2])
-        with l_col:
-            st.markdown(f"#### 📝 현재 담은 과목 내역 (총 **{len(my_df)}**개 강좌)")
-        with r_col:
-            if st.button("🔄 시간표 전체 초기화", type="primary"):
-                st.session_state.my_courses = []
-                st.session_state.color_map = {}
-                st.query_params.clear()
-                st.rerun()
-
-        for idx, (code, no) in enumerate(st.session_state.my_courses):
-            match_rows = master_df[(master_df['교과목코드'] == code) & (master_df['분반'] == no)]
-            if match_rows.empty: continue
-            c = match_rows.iloc[0]
-            c_col, d_col = st.columns([0.85, 0.15])
-            with c_col:
-                st.markdown(f"""
-                <div style="padding:10px 12px; border-left:5px solid {st.session_state.color_map.get(c['교과목명'],'#ccc')}; background-color:#f1f3f5; margin-bottom:4px; font-size:14px;">
-                    <strong>[{c['전공분류']}] {c['교과목명']}</strong> - {c['교수명']} ({c['교과목코드']}-{c['분반']:02d}) | {c['시간텍스트'].replace('\n',' ')}
+    # 이미지 전환용 모던 스크립트 결합 다운로더 
+    js_downloader = """
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <button id="download-btn" style="width:100%; margin-top:15px; padding:12px; background-color:#112F6F; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:600; font-size:14px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);">✨ 인스타 감성 시간표 이미지 저장하기</button>
+    <div id="status-log" style="margin-top:6px; font-size:12px; text-align:center;"></div>
+    <script>
+        document.getElementById('download-btn').onclick = function() {
+            const area = document.getElementById("capture-area");
+            const log = document.getElementById('status-log');
+            log.innerText = '이미지 빌드 중...'; log.style.color = '#112F6F';
+            html2canvas(area, {scale: 3, backgroundColor: '#ffffff', borderRadius: 16}).then(canvas => {
+                const a = document.createElement("a");
+                a.href = canvas.toDataURL("image/png");
+                a.download = "YONSEI_TIMETABLE.png";
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                log.innerText = '✅ 갤러리에 저장되었습니다!'; log.style.color = '#059669';
+            }).catch(e => { log.innerText = '❌ 에러: ' + e; log.style.color = '#DC2626'; });
+        };
+    </script>
+    """
+    st.components.v1.html(table_html + js_downloader, height=480)
+    
+    st.write("---")
+    st.markdown("#### 📝 담아둔 장바구니 상세 리스트")
+    
+    # 리스트 카드로 예쁘게 정렬
+    for idx, row in my_df.iterrows():
+        with st.container():
+            st.markdown(f"""
+            <div class="card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <span style="background-color:#E0F2FE; color:#0369A1; padding:3px 8px; border-radius:6px; font-size:11px; font-weight:600; margin-right:8px;">{row['과목종별']}</span>
+                        <strong style="font-size:15px; color:#1E293B;">{row['과목명']}</strong>
+                        <span style="font-size:13px; color:#64748B; margin-left:10px;">| {row['교수명']} 교수님 · {row['강의실']}</span>
+                    </div>
+                    <div style="font-size:12px; color:#94A3B8;">학정번호: {row['학정번호']} ({row['학점']}학점)</div>
                 </div>
-                """, unsafe_allow_html=True)
-            with d_col:
-                if st.button("제거", key=f"del-{code}-{no}-{idx}", use_container_width=True):
-                    st.session_state.my_courses.pop(idx)
-                    up = ",".join([f"{cc}-{nn}" for cc, nn in st.session_state.my_courses])
-                    if up: st.query_params["courses"] = up
-                    else: st.query_params.clear()
-                    st.rerun()
-else:
-    st.warning("⚠️ 엑셀 파일 파싱 결과 데이터가 비어있습니다. 파일 서식을 다시 한 번 확인해 주세요.")
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # 카드의 우측 정렬을 유지하기 위해 별도 처리한 삭제 액션 버튼
+            if st.button("과목 제외", key=f"del-{row['학정번호']}", type="secondary"):
+                st.session_state.my_courses.remove(row['학정번호'])
+                if st.session_state.my_courses:
+                    st.query_params["courses"] = ",".join(st.session_state.my_courses)
+                else:
+                    st.query_params.clear()
+                st.rerun()
