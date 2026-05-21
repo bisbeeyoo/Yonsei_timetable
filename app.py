@@ -3,116 +3,30 @@ import pandas as pd
 import os
 import re
 
-
-
+# ==========================================
+#  🔥 CORE: 업로드된 엑셀 파일을 파싱하는 엔진으로 개조
+# ==========================================
 @st.cache_data
-def load_and_parse_yonsei_csv():
-    # 파일명을 .xls로 변경
-    file_path = "time_table1(2025-2).xls" 
-    if not os.path.exists(file_path):
+def load_and_parse_yonsei_excel(uploaded_file):
+    """
+    고정된 경로 대신, 사용자가 업로드한 파일 객체(uploaded_file)를 받아
+    엑셀 데이터를 기존 파싱 엔진용 텍스트 라인 형태로 변환 후 파싱합니다.
+    """
+    if uploaded_file is None:
         return pd.DataFrame()
     
-    # 엑셀 파일을 읽어서 기존 파싱 엔진이 쓰던 텍스트 라인 형태로 변환
     try:
-        excel_df = pd.read_excel(file_path, header=None)
+        # 업로드된 파일 객체를 pandas가 바로 읽도록 수정 (xls, xlsx 모두 지원)
+        excel_df = pd.read_excel(uploaded_file, header=None)
+        
         # 각 행을 쉼표(,)로 연결된 문자열 리스트로 변환
         lines = []
         for idx, row in excel_df.iterrows():
             line_str = ",".join([str(val).strip() if pd.notna(val) else "" for val in row])
             lines.append(line_str + "\n")
     except Exception as e:
-        st.error(f"❌ 엑셀 파일을 읽는 중 오류가 발생했습니다: {e}")
+        st.error(f"❌ 엑셀 파일을 읽는 중 오류가 발생했습니다. 올바른 시간표 파일인지 확인해 주세요: {e}")
         return pd.DataFrame()
-        
-    parsed_courses = []
-    current_major = "공통/교직"
-    
-    # --- 여기서부터는 기존의 while idx < len(lines): 파싱 로직을 그대로 유지합니다 ---
-    idx = 0
-    while idx < len(lines):
-        line = lines[idx].strip()
-        if line and not line.startswith(",") and ",,,," in line:
-            current_major = line.split(",")[0].strip()
-            idx += 1
-            continue
-        if "구      분" in line:
-            header_parts = [p.strip() for p in line.split(",")]
-            days_in_block = [p for p in header_parts if p in ["월", "화", "수", "목", "금"]]
-            idx += 1
-            while idx < len(lines) and "구      분" not in lines[idx] and ",,,," not in lines[idx]:
-                block_line = lines[idx].strip()
-                if "1,2교시" in block_line: current_period = "1,2"
-                elif "3,4교시" in block_line: current_period = "3,4"
-                if "과 목 종 별" in block_line:
-                    try:
-                        types = lines[idx].strip().split(",")[2:]
-                        codes = lines[idx+1].strip().split(",")[2:]
-                        names = lines[idx+2].strip().split(",")[2:]
-                        profs = lines[idx+3].strip().split(",")[2:]
-                        rooms = lines[idx+4].strip().split(",")[2:]
-                        for col_idx, day in enumerate(days_in_block):
-                            if col_idx < len(names) and names[col_idx].strip():
-                                c_name = names[col_idx].strip()
-                                if "(영어)" in codes[col_idx]: c_name += " (영어)"
-                                h_code = codes[col_idx].split("(")[0].strip()
-                                credit = 2 if "SPT" in h_code else 3
-                                final_major = current_major
-                                if "교직" in current_major:
-                                    if "SPT" in h_code: final_major = "교직(자격증)"
-                                    elif "SPL" in h_code: final_major = "평생교육사"
-                                    else: final_major = "교직(공통)"
-                                parsed_courses.append({
-                                    "전공": final_major, "요일": day, "교시": current_period,
-                                    "과목종별": types[col_idx].strip() if col_idx < len(types) else "전공",
-                                    "학정번호": h_code, "과목명": c_name,
-                                    "교수명": profs[col_idx].strip() if col_idx < len(profs) else "미지정",
-                                    "강의실": rooms[col_idx].strip() if col_idx < len(rooms) else "미지정", "학점": credit
-                                })
-                    except Exception: pass
-                    idx += 5
-                    continue
-                idx += 1
-            continue
-        idx += 1
-
-    df = pd.DataFrame(parsed_courses).drop_duplicates(subset=['학정번호', '요일', '교시'])
-    df['time_slots_set'] = df.apply(lambda r: set((r['요일'], int(p)) for p in r['교시'].split(',')), axis=1)
-    return df
-# --- [UI/UX] 요즘 대학생 취향의 깔끔한 Pretendard 폰트 및 모던 네이비 스타일 ---
-st.set_page_config(page_title="YONSEI GS-ED Timetable", layout="wide", initial_sidebar_state="expanded")
-
-st.markdown("""
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;800&display=swap');
-        * { font-family: 'Pretendard', sans-serif !important; }
-        
-        .main-title { font-size: 2.2rem; font-weight: 800; color: #112F6F; margin-bottom: 5px; }
-        .sub-title { font-size: 1rem; color: #64748B; margin-bottom: 25px; }
-        
-        .card { background-color: #F8FAFC; padding: 18px; border-radius: 12px; border: 1px solid #E2E8F0; margin-bottom: 12px; }
-        .course-list-item { padding: 12px; background-color: #F1F5F9; border-radius: 10px; margin-bottom: 8px; border-left: 5px solid #112F6F; }
-        
-        .stTabs [data-baseweb="tab"] { font-weight: 600; color: #64748B; font-size: 15px; }
-        .stTabs [data-baseweb="tab"][aria-selected="true"] { color: #112F6F !important; border-bottom-color: #112F6F !important; }
-    </style>
-""", unsafe_allow_html=True)
-
-st.markdown('<div class="main-title">🦅 YONSEI GS-ED</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-title">연세대학교 교육대학원 수강신청 시간표 도우미 (2025-2)</div>', unsafe_allow_html=True)
-
-PREDEFINED_COLORS = ["#E2EFFE", "#FEE2E2", "#FEF3C7", "#E0F2FE", "#ECEFEE", "#F3E8FF", "#ECFDF5", "#FFF1F2", "#F0FDFA", "#EFF6FF"]
-
-# ==========================================
-#  🔥 CORE: 연세교대원 특유의 CSV 구조 완벽 파싱 엔진
-# ==========================================
-@st.cache_data
-def load_and_parse_yonsei_csv():
-    file_path = "time_table1(2025-2).xls - 2025-2.csv"
-    if not os.path.exists(file_path):
-        return pd.DataFrame()
-    
-    with open(file_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
         
     parsed_courses = []
     current_major = "공통/교직"
@@ -193,15 +107,61 @@ def load_and_parse_yonsei_csv():
         idx += 1
 
     df = pd.DataFrame(parsed_courses).drop_duplicates(subset=['학정번호', '요일', '교시'])
-    df['time_slots_set'] = df.apply(lambda r: set((r['요일'], int(p)) for p in r['교시'].split(',')), axis=1)
+    if not df.empty:
+        df['time_slots_set'] = df.apply(lambda r: set((r['요일'], int(p)) for p in r['교시'].split(',')), axis=1)
     return df
 
-master_df = load_and_parse_yonsei_csv()
+
+# --- [UI/UX] 요즘 대학생 취향의 깔끔한 Pretendard 폰트 및 모던 네이비 스타일 ---
+st.set_page_config(page_title="YONSEI GS-ED Timetable", layout="wide", initial_sidebar_state="expanded")
+
+st.markdown("""
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Pretendard:wght@400;600;800&display=swap');
+        * { font-family: 'Pretendard', sans-serif !important; }
+        
+        .main-title { font-size: 2.2rem; font-weight: 800; color: #112F6F; margin-bottom: 5px; }
+        .sub-title { font-size: 1rem; color: #64748B; margin-bottom: 25px; }
+        
+        .card { background-color: #F8FAFC; padding: 18px; border-radius: 12px; border: 1px solid #E2E8F0; margin-bottom: 12px; }
+        .course-list-item { padding: 12px; background-color: #F1F5F9; border-radius: 10px; margin-bottom: 8px; border-left: 5px solid #112F6F; }
+        
+        .stTabs [data-baseweb="tab"] { font-weight: 600; color: #64748B; font-size: 15px; }
+        .stTabs [data-baseweb="tab"][aria-selected="true"] { color: #112F6F !important; border-bottom-color: #112F6F !important; }
+    </style>
+""", unsafe_allow_html=True)
+
+st.markdown('<div class="main-title">🦅 YONSEI GS-ED</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">연세대학교 교육대학원 수강신청 시간표 도우미 (2025-2)</div>', unsafe_allow_html=True)
+
+PREDEFINED_COLORS = ["#E2EFFE", "#FEE2E2", "#FEF3C7", "#E0F2FE", "#ECEFEE", "#F3E8FF", "#ECFDF5", "#FFF1F2", "#F0FDFA", "#EFF6FF"]
+
+
+# ==========================================
+#  📦 SIDEBAR: 파일 수동 업로드 패널 추가
+# ==========================================
+with st.sidebar:
+    st.markdown("### 📊 시간표 파일 등록")
+    # 사용자가 직접 엑셀 파일을 드래그 앤 드롭 하도록 유도
+    uploaded_file = st.file_uploader(
+        "교대원 시간표 엑셀 파일(.xls, .xlsx)을 업로드해 주세요.", 
+        type=["xls", "xlsx"]
+    )
+    st.write("---")
+
+# 파일이 업로드되었을 경우에만 데이터를 가져오고, 안 올라왔으면 화면 잠금(안내 메시지)
+if uploaded_file is not None:
+    master_df = load_and_parse_yonsei_excel(uploaded_file)
+else:
+    st.info("📊 서비스를 시작하려면 왼쪽 사이드바에 연세대학교 교육대학원 시간표 엑셀 파일(`.xls` 또는 `.xlsx`)을 업로드해 주세요.")
+    st.stop()  # 파일이 들어오기 전까지 하단 로직 실행 차단
 
 if master_df.empty:
-    st.error("⚠️ 데이터를 파싱하지 못했습니다. 파일명 `time_table1(2025-2).xls - 2025-2.csv`를 재확인해 주세요.")
+    st.error("⚠️ 데이터를 파싱하지 못했습니다. 올바른 형식의 연세교대원 시간표 엑셀 파일이 맞는지 다시 확인해 주세요.")
     st.stop()
 
+
+# 상태 관리 변수 초기화
 if 'my_courses' not in st.session_state: st.session_state.my_courses = []
 if 'color_map' not in st.session_state: st.session_state.color_map = {}
 
@@ -232,8 +192,9 @@ def get_available_courses(df, selected_ids):
 
 available_df = get_available_courses(master_df, st.session_state.my_courses)
 
+
 # ==========================================
-#  LAYOUT SIDEBAR: 에타 감성의 통합 검색창 & 필터
+#  LAYOUT SIDEBAR: 에타 감성의 통합 검색창 & 필터 기본 동작
 # ==========================================
 with st.sidebar:
     st.markdown("### 🛠️ 강좌 검색 및 필터 패널")
@@ -245,23 +206,25 @@ with st.sidebar:
     # 1) 전공 강좌 탭 파트
     with tab_m:
         major_list = sorted([m for m in master_df['전공'].unique() if "교직" not in m and "평생" not in m])
-        selected_major = st.selectbox("소속 전공 선택", major_list)
-        
-        filtered_major = available_df[available_df['전공'] == selected_major]
-        if search_query:
-            filtered_major = filtered_major[filtered_major['과목명'].str.lower().str.contains(search_query) | filtered_major['교수명'].str.lower().str.contains(search_query)]
-            
-        if not filtered_major.empty:
-            sel_idx = st.selectbox("과목 선택", options=filtered_major.index, 
-                                   format_func=lambda idx: f"[{filtered_major.loc[idx]['요일']}] {filtered_major.loc[idx]['과목명']} - {filtered_major.loc[idx]['교수명']}")
-            if st.button("➕ 시간표에 전공 추가", use_container_width=True, type="primary"):
-                row = filtered_major.loc[sel_idx]
-                st.session_state.my_courses.append(row['학정번호'])
-                st.session_state.color_map[row['과목명']] = PREDEFINED_COLORS[len(st.session_state.color_map) % len(PREDEFINED_COLORS)]
-                st.query_params["courses"] = ",".join(st.session_state.my_courses)
-                st.rerun()
+        if major_list:
+            selected_major = st.selectbox("소속 전공 선택", major_list)
+            filtered_major = available_df[available_df['전공'] == selected_major]
+            if search_query:
+                filtered_major = filtered_major[filtered_major['과목명'].str.lower().str.contains(search_query) | filtered_major['교수명'].str.lower().str.contains(search_query)]
+                
+            if not filtered_major.empty:
+                sel_idx = st.selectbox("과목 선택", options=filtered_major.index, 
+                                       format_func=lambda idx: f"[{filtered_major.loc[idx]['요일']}] {filtered_major.loc[idx]['과목명']} - {filtered_major.loc[idx]['교수명']}")
+                if st.button("➕ 시간표에 전공 추가", use_container_width=True, type="primary"):
+                    row = filtered_major.loc[sel_idx]
+                    st.session_state.my_courses.append(row['학정번호'])
+                    st.session_state.color_map[row['과목명']] = PREDEFINED_COLORS[len(st.session_state.color_map) % len(PREDEFINED_COLORS)]
+                    st.query_params["courses"] = ",".join(st.session_state.my_courses)
+                    st.rerun()
+            else:
+                st.caption("현재 추가 가능한 전공 과목이 없습니다.")
         else:
-            st.caption("현재 추가 가능한 전공 과목이 없습니다.")
+            st.caption("조회된 전공이 없습니다.")
 
     # 2) 교직 강좌 탭 파트
     with tab_k:
@@ -288,7 +251,7 @@ with st.sidebar:
 #  LAYOUT MAIN: 시각화 시간표 보드 & 장바구니 리스트
 # ==========================================
 if not st.session_state.my_courses:
-    st.info("💡 왼쪽 사이드바에서 소속 전공이나 교직 과목을 선택하시면, CSV에서 추출한 모든 실시간 강좌 리스트가 나타납니다!")
+    st.info("💡 왼쪽 사이드바에서 소속 전공이나 교직 과목을 선택하시면, 엑셀에서 파싱된 실시간 강좌 리스트가 나타납니다!")
 else:
     my_df = master_df[master_df['학정번호'].isin(st.session_state.my_courses)].drop_duplicates(subset=['학정번호'])
     total_credits = my_df['학점'].sum()
