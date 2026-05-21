@@ -3,30 +3,81 @@ import pandas as pd
 import os
 import re
 
-# --- 기존 load_and_parse_yonsei_csv 함수를 수정하거나, 파일 업로더 추가 ---
 
-st.sidebar.markdown("### 📊 시간표 데이터 업로드")
-uploaded_file = st.sidebar.file_uploader("교대원 CSV 파일을 선택하세요", type=["csv"])
 
 @st.cache_data
-def parse_uploaded_csv(file_contents):
-    # 기존 load_and_parse_yonsei_csv() 엔진 로직을 그대로 쓰되, 
-    # open() 대신 전달받은 file_contents(텍스트 라인 배열)를 사용하도록 변경
+def load_and_parse_yonsei_csv():
+    # 파일명을 .xls로 변경
+    file_path = "time_table1(2025-2).xls" 
+    if not os.path.exists(file_path):
+        return pd.DataFrame()
+    
+    # 엑셀 파일을 읽어서 기존 파싱 엔진이 쓰던 텍스트 라인 형태로 변환
+    try:
+        excel_df = pd.read_excel(file_path, header=None)
+        # 각 행을 쉼표(,)로 연결된 문자열 리스트로 변환
+        lines = []
+        for idx, row in excel_df.iterrows():
+            line_str = ",".join([str(val).strip() if pd.notna(val) else "" for val in row])
+            lines.append(line_str + "\n")
+    except Exception as e:
+        st.error(f"❌ 엑셀 파일을 읽는 중 오류가 발생했습니다: {e}")
+        return pd.DataFrame()
+        
     parsed_courses = []
     current_major = "공통/교직"
     
-    lines = [line.decode("utf-8") for line in file_contents.readlines()]
-    
-    # ... (이후 기존 파싱 while문 로직 그대로 유지) ...
-    return pd.DataFrame(parsed_courses).drop_duplicates(subset=['학정번호', '요일', '교시'])
+    # --- 여기서부터는 기존의 while idx < len(lines): 파싱 로직을 그대로 유지합니다 ---
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx].strip()
+        if line and not line.startswith(",") and ",,,," in line:
+            current_major = line.split(",")[0].strip()
+            idx += 1
+            continue
+        if "구      분" in line:
+            header_parts = [p.strip() for p in line.split(",")]
+            days_in_block = [p for p in header_parts if p in ["월", "화", "수", "목", "금"]]
+            idx += 1
+            while idx < len(lines) and "구      분" not in lines[idx] and ",,,," not in lines[idx]:
+                block_line = lines[idx].strip()
+                if "1,2교시" in block_line: current_period = "1,2"
+                elif "3,4교시" in block_line: current_period = "3,4"
+                if "과 목 종 별" in block_line:
+                    try:
+                        types = lines[idx].strip().split(",")[2:]
+                        codes = lines[idx+1].strip().split(",")[2:]
+                        names = lines[idx+2].strip().split(",")[2:]
+                        profs = lines[idx+3].strip().split(",")[2:]
+                        rooms = lines[idx+4].strip().split(",")[2:]
+                        for col_idx, day in enumerate(days_in_block):
+                            if col_idx < len(names) and names[col_idx].strip():
+                                c_name = names[col_idx].strip()
+                                if "(영어)" in codes[col_idx]: c_name += " (영어)"
+                                h_code = codes[col_idx].split("(")[0].strip()
+                                credit = 2 if "SPT" in h_code else 3
+                                final_major = current_major
+                                if "교직" in current_major:
+                                    if "SPT" in h_code: final_major = "교직(자격증)"
+                                    elif "SPL" in h_code: final_major = "평생교육사"
+                                    else: final_major = "교직(공통)"
+                                parsed_courses.append({
+                                    "전공": final_major, "요일": day, "교시": current_period,
+                                    "과목종별": types[col_idx].strip() if col_idx < len(types) else "전공",
+                                    "학정번호": h_code, "과목명": c_name,
+                                    "교수명": profs[col_idx].strip() if col_idx < len(profs) else "미지정",
+                                    "강의실": rooms[col_idx].strip() if col_idx < len(rooms) else "미지정", "학점": credit
+                                })
+                    except Exception: pass
+                    idx += 5
+                    continue
+                idx += 1
+            continue
+        idx += 1
 
-# 파일이 업로드되었을 때만 마스터 데이터프레임 생성
-if uploaded_file is not None:
-    master_df = parse_uploaded_csv(uploaded_file)
-else:
-    st.info("📊 서비스를 이용하시려면 왼쪽 사이드바에 연세교대원 시간표 CSV 파일을 업로드해 주세요.")
-    st.stop()
-
+    df = pd.DataFrame(parsed_courses).drop_duplicates(subset=['학정번호', '요일', '교시'])
+    df['time_slots_set'] = df.apply(lambda r: set((r['요일'], int(p)) for p in r['교시'].split(',')), axis=1)
+    return df
 # --- [UI/UX] 요즘 대학생 취향의 깔끔한 Pretendard 폰트 및 모던 네이비 스타일 ---
 st.set_page_config(page_title="YONSEI GS-ED Timetable", layout="wide", initial_sidebar_state="expanded")
 
